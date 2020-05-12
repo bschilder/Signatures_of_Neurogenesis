@@ -1,0 +1,996 @@
+---
+title: "Signatures_of_Neurogensis"
+author: "Brian Schilder"
+date: "10/1/2017"
+output: 
+  html_document: 
+    toc: yes
+---
+
+* **PROJECT GOAL**
+  + Utilize brain-wide gene expression databases to identify regions that contain molecular signatures of adult neurogenesis.
+
+* **DATASETS**
+  1. ABA Mouse ISH
+  2. ABA Macaque microarray adult/development
+  3. ABA Human microarray adult/development
+  4. ABA Human RNA-seq adult/development
+  5. sc-RNAs-seq reference datasets for deconvolution:
+    i) Nathan Skene's mouse meta-data
+    ii) Neurogenic cells (Shin et al. 2015)
+    iii) Human data (Darmanis et al. 2015)
+
+____
+____
+
+* **Jeremy Miller Ideas:**
+1. Using Table S1 (or some other curated list), search the ABA for "neurons in waiting."
+
+2. Extend the analysis to include human brain.  I'm not sure if the gene list from figure 5 in the paper you attached could be used directly (since the samples we collected from human were whole dentate gyrus, if I am remembering correctly), but that would make a good starting point.
+
+3. A similar option would be to do a deconvolution analysis on RNA-Seq data from the BrainSpan atlas using the overlapping mouse/NHP[/human?] neurogenesis list as marker genes for SGZ.  In theory we could show the relative decrease in SGZ neurons over time and also show that it doesn't reach 0 (as long as we get any reads from these genes in the oldest donors).
+
+* **Additional Ideas:**
+1. Use expression values for all genes in the SGZ (mouse or macaque) or  sc-RNA-seq from neural stem cell, and compare to transcriptome expression from each brain region in an ABA atlas.
+  - Very rough. Characterizes SGZ as a whole, not necessarilly what makes it neurogenic.
+  
+2. Look for similar logFC of gene sets for each 'likelyCellType' (Miller et al. 2013) (e.g. immature neuron, dividing cell) in one of the above atlases (after differential expression).
+  i) Can compare directly within respective species' ABA atlases
+  ii) Becomes interspecies when comparing to ABA human (likely diverged)
+  
+3. Using mouse or macaque modules (Miller et al. 2013) (e.g. tan), identify similar modules (based on similar kME values, or gene list overlap) one of the above atlases (after WGNCA) and then find which brain structures express them the most.
+  i) Problem: tan module was found by only analyzing 24 SGZ/GCL samples. Unlikely to recover the same tan module with full ABA macaque dataset.
+
+4. Use sc-RNA-seq gene list to find similar patterns of expression across any of the ABA datasets.
+
+5. Deconvolution:
+  i) EWCE: Using a sc-RNA-seq reference dataset and an ABA atlas.
+  ii) Other methods: Use a gene list as a reference  
+____
+____
+
+# Import Datasets
+```{r}
+library(pander)
+setwd("~/Desktop/Research/Signatures_of_Neurogensis/")
+```
+
+## ABA data: Mouse
+```{r}
+# Mouse SGZ & GCL: GSE39697
+```
+
+
+## ABA data: Adult Human Microarray
+```{r,message=F,warning=F, eval=F}
+load("/Users/schilder/Desktop/Dissertation/Gene_Expression/Raw data/Microarray/Full_Human_Microarray/All_ABA_humans.mni.RData")
+# Set up eset
+  sampleInfo.hum <-subset(sampleInfo.hum_all, select= -c(mni_x,mni_y,mni_z))
+
+# Make all cols factors, & Reorder names alphabetically
+  sampleInfo.hum <- lapply(sampleInfo.hum, factor)
+  sampleInfo.hum <- sampleInfo.hum[order(names(sampleInfo.hum))]
+
+library(annotate)
+# Set up phenotype data
+  pdata <- AnnotatedDataFrame(data.frame(sampleInfo.hum))
+  sampleNames(pdata) <- sampleInfo.hum$unique_id
+# Create ExpressionSet
+  ABA_hum <- ExpressionSet(datExpr.hum_all, phenoData = pdata) #Correct this annot
+# Add treatment condition
+  ABA_hum$treatment <- "Human"
+```
+
+## ABA data: Developmental Macaque Microarray
+### Macaque Preprocessing
+```{r,message=F,warning=F, eval=F}
+library(WGCNA)
+#mac_expression <- read.csv("Full Macaque Microarray/expression_matrix.csv", header=FALSE, row.names=1)
+#mac_sampleinfo <- read.csv("Full Macaque Microarray/columns_metadata.csv", header=TRUE)
+#mac_probes <- read.csv("Full Macaque Microarray/rows_metadata.csv", header=TRUE)
+#save(mac_expression, mac_sampleinfo, mac_probes, file="Macaque Data.RData")
+  # Saved as R objects to speed up importing data
+load("~/Desktop/Dissertation/Gene_Expression/Raw data/Microarray/Macaque Data.RData")
+
+datExpr <- mac_expression
+probeInfo <- mac_probes
+sampleInfo <- mac_sampleinfo
+rm(mac_expression,mac_probes,mac_sampleinfo)
+# Select only probes with associated entrez genes
+  rownames(datExpr) <- probeInfo$probe_name
+  validProbes = which(probeInfo$entrez_id>=0,arr.ind=TRUE)
+  datExpr <- datExpr[validProbes,]
+  probeInfo <- probeInfo[validProbes,]
+# Some genes have more than one probe. The collapseRows function chooses a single probe to represent a gene.
+probeInfo$gene_symbol <-gsub("[()]","",probeInfo$gene_symbol) # Gets rid of weird parentheses
+  probeNames = probeInfo[which(probeInfo$probe_name == rownames(datExpr)),"gene_symbol"]
+  probeIDs = rownames(datExpr)
+  datCollapsed = WGCNA::collapseRows(datExpr, probeNames, probeIDs) # Collapse
+  datExpr <- datCollapsed$datETcollapsed
+  probeInfo <- probeInfo[which(datCollapsed$selectedRow==T, arr.ind=T),]
+save(datExpr, probeInfo, sampleInfo,file="ABA.macaque_preprocessed.v4.RData")
+```
+
+### Convert to eset
+```{r,message=F,warning=F}
+# From ABA website
+load("~/Desktop/Research/Signatures_of_Neurogensis/ABA.macaque_preprocessed.v4.RData")
+# From Jeremy's Dropbox
+#load("~/Desktop/Research/Signatures_of_Neurogensis/neurogenesisPaperData_ComBat_5_29_12.RData")
+
+datExpr.mac <-datExpr
+probeInfo.mac <-probeInfo
+sampleInfo.mac <-sampleInfo
+rm(datExpr,probeInfo,sampleInfo)
+library(annotate)
+# Create eset
+ex_mac <- ExpressionSet(datExpr.mac)
+# Create macaque phenoData:
+sampleInfo.mac$unique_id <- factor(paste(sampleInfo.mac$donor_name, sampleInfo.mac$structure_acronym, sampleInfo.mac$well_id, sep="_"))
+
+p <- data.frame(sampleInfo.mac)
+rownames(p) <- sampleInfo.mac$unique_id
+pdata <- AnnotatedDataFrame(p)
+# Replace phenoData in mac ExpressionSet
+phenoData(ex_mac) <- pdata
+# Insert condition
+ex_mac$treatment <- "Macaque"
+
+ex_mac <-ex_mac[,colSums(is.na(exprs(ex_mac))) == 0] # Remove cols with NA 
+
+rm(datExpr.mac,probeInfo.mac,sampleInfo.mac,p,pdata)
+```
+
+## Import Miller et al. 2013 gene sets
+* Miller J a, Nathanson J, Franjic D, Shim S, Dalley R a, Shapouri S, et al.: Conserved molecular signatures of neurogenesis in the hippocampal subgranular zone of rodents and primates. [Internet]. Development 2013;140:4633–44. 
+```{r,message=F,warning=F}
+library(readxl); library(annotate)
+# S1: Genes differentially expressed between mouse SGZ and GCL
+S1 <- data.frame(read_excel("~/Desktop/Research/Signatures_of_Neurogensis/Miller_2013/DEV097212 TableS1.xlsx",na = "NA"))
+# Get rid of stars
+S1$MouseGene <-gsub("[*]","",S1$MouseGene)
+
+unique(S1$likelyCellType)
+  ## Get gene list
+  immature.neuron <- S1[S1$likelyCellType=="Immature Neuron",]$MouseGene
+  dividing.cell <- S1[S1$likelyCellType=="Dividing Cell",]$MouseGene
+  S1.genes <- S1$MouseGene
+  # Convert from mouse to human genes
+  library(EWCE)
+  data("mouse_to_human_homologs")
+  m2h = unique(mouse_to_human_homologs[,c("HGNC.symbol","MGI.symbol")])
+  s1.genes <- unique(m2h[m2h$MGI.symbol %in% S1.genes,"HGNC.symbol"])
+  
+  paste(sum(s1.genes %in% row.names(exprs(ex_mac))),"/",length(S1.genes),
+          "'Mouse SGZ-enriched' genes found in ABA Macaque microarray dataset.")
+
+# S3: Mouse network modules
+mouse_modules <- data.frame(read_excel("~/Desktop/Research/Signatures_of_Neurogensis/Miller_2013/DEV097212 TableS3.xlsx",na = "NA"))
+  ## Subset specific modules
+  ### tan module was associated with "neurogenesis" in Miller et al. 2013.
+Mouse_mod.tan <- subset(mouse_modules, Module=="tan")$HumanOrtholog
+  paste(sum(Mouse_mod.tan %in% row.names(exprs(ex_mac))),"/",length(Mouse_mod.tan),"Mouse Tan module genes found in ABA Macaque microarray dataset.")
+  
+# S4: Macaque network modules
+macaque_modules <- data.frame(read_excel("~/Desktop/Research/Signatures_of_Neurogensis/Miller_2013/DEV097212 TableS4.xlsx", na="NA"))
+  ## Subset specific modules
+  ### tan module was associated with "neurogenesis" in Miller et al. 2013.
+  Mac_mod.tan <- subset(macaque_modules, Module=="tan")$Gene
+  paste(sum(Mac_mod.tan %in% row.names(exprs(ex_mac))),"/",length( Mac_mod.tan),"Macaque Tan module genes found in ABA Macaque microarray dataset.")
+```
+
+### Identify Macaque SGZ-enriched genes
+```{r,message=F,warning=F}
+# Perform DGE on Macaque SGZ vs. GCL
+  SGZ.samples <-ex_mac[,pData(ex_mac)$structure_acronym==c("DGsg") ]
+  GCL.samples <-ex_mac[,pData(ex_mac)$structure_acronym==c("DGgr") ]
+
+# Limma
+  library(limma); library(statmod)
+  limma.data <-cbind(exprs(SGZ.samples), exprs(GCL.samples))
+  fit <-lmFit(limma.data, design=
+                 c(rep(1,ncol(exprs(SGZ.samples))), rep(-1,ncol(exprs(GCL.samples)))) )
+  fit <- eBayes(fit)
+  SGZ.vs.GCL.results <- topTable(fit, number=Inf)
+  
+# Pair-wise t-test
+ # t.test(exprs(SGZ.samples), exprs(GCL.samples), paired=T)
+
+sig.DEGS <-row.names(subset(SGZ.vs.GCL.results, adj.P.Val<=0.05))
+paste("There are",length(sig.DEGS),"significant DEGs between Macaque SGZ and GCL.")
+# Top logFC genes
+topTable(fit, number=10, sort.by = "logFC")
+```
+
+
+
+# __Candidate Genes__
+```{r,message=F,warning=F}
+library(dplyr); library(ggplot2)
+candidate.genes <- ex_mac[row.names(exprs(ex_mac)) %in% c("SOX11","SOX4","DCX","MKI67")][,pData(ex_mac)$age=="48 mo"]
+
+copy.mac <- data.frame(t(data.frame(exprs(candidate.genes))))
+#copy.mac$Region <-sub(".*_ *(.*?) *_.*", "\\1", colnames(exprs(candidate.genes)))
+copy.mac$structure_name <-pData(candidate.genes)$structure_name
+copy.mac$structure_acronym <-pData(candidate.genes)$structure_acronym
+candidate.data <-copy.mac %>% group_by(structure_name,structure_acronym) %>% summarise(SOX11=mean(SOX11), DCX=mean(DCX), MKI67=mean(MKI67)) %>% data.frame()
+
+
+
+# SOX11
+data <-candidate.data[order(-candidate.data$SOX11),]
+## All regions
+ggplot(data) + geom_bar(aes(x=structure_name, y=SOX11, fill=SOX11),stat='identity') + theme(legend.position = "none", axis.text.x = element_text(angle=45, hjust=1),plot.title = element_text(hjust=0.5))
+# Top 10 expression
+ggplot(rbind(subset(data,structure_acronym!="DGsg" & structure_acronym!="DGgr")[1:10,], subset(data,structure_acronym=="DGsg"|structure_acronym=="DGgr"))) + geom_bar(aes(x=structure_name, y=SOX11, fill=SOX11),stat='identity') + theme(legend.position = "none", axis.text.x = element_text(angle=45, hjust=1),plot.title = element_text(hjust=0.5))+ labs(title="Regions with the top 10 expression:\nSOX11")
+
+# DCX
+data <-candidate.data[order(-candidate.data$DCX),]
+## All regions
+ggplot(data) + geom_bar(aes(x=structure_name, y=DCX, fill=DCX),stat='identity') + theme(legend.position = "none", axis.text.x = element_text(angle=45, hjust=1),plot.title = element_text(hjust=0.5))
+## Top 10 expression
+ggplot(rbind(subset(data,structure_acronym!="DGsg" & structure_acronym!="DGgr")[1:10,], subset(data,structure_acronym=="DGsg"|structure_acronym=="DGgr"))) + geom_bar(aes(x=structure_name, y=DCX, fill=DCX),stat='identity') + theme(legend.position = "none", axis.text.x = element_text(angle=45, hjust=1),plot.title = element_text(hjust=0.5))+ labs(title="Regions with the top 10 expression:\nDCX")
+
+# MKI67
+data <-candidate.data[order(-candidate.data$MKI67),]
+## All regions
+ggplot(data) + geom_bar(aes(x=structure_name, y=MKI67, fill=MKI67),stat='identity') + theme(legend.position = "none", axis.text.x = element_text(angle=45, hjust=1),plot.title = element_text(hjust=0.5))
+## Top 10 expression
+ggplot(rbind(subset(data, structure_acronym!="DGsg" & structure_acronym!="DGgr")[1:10,], subset(data,structure_acronym=="DGsg"|structure_acronym=="DGgr"))) + geom_bar(aes(x=structure_name, y=MKI67, fill=MKI67),stat='identity') + theme(legend.position = "none", axis.text.x = element_text(angle=45, hjust=1),plot.title = element_text(hjust=0.5)) + labs(title="Regions with the top 10 expression:\nMIK67")
+```
+
+
+# __[Approach 1: Unsupervised Clustering]__
+
+## PCA: All Genes 
+```{r,message=F,warning=F}
+first.PC <-1; last.PC <-4
+
+# Run PCA
+  # full_PCA <- prcomp(exprs(ex_mac), scale.=T, center=F)
+  # save(full_PCA, file="all.genes_PCA.rda")
+  load("all.genes_PCA.rda")
+# Get proportion of variance
+per_PC1 <- round(summary(full_PCA)$importance[2,1]*100,2)
+per_PC2 <- round(summary(full_PCA)$importance[2,2]*100,2)
+# Create data.frame
+full_PCA.data <- data.frame(full_PCA$rotation[,first.PC:last.PC])
+full_PCA.data$Region <- pData(ex_mac)$structure_acronym
+full_PCA.data$Age <- factor(pData(ex_mac)$age, c("E40","E50","E70","E80","E90","E120","0 mo","3 mo","12 mo","48 mo"),ordered=T)
+
+
+# plot PCA
+dat <-full_PCA.data
+DGsg <-subset(dat,Region=="DGsg")
+# By Region
+### Plot
+library(ggplot2)
+ggplot(data=dat) + geom_point(aes(x=PC1, y=PC2, fill=Region, color=Region), size=2) +
+  geom_point(data=DGsg, aes(x=PC1, y=PC2, colour=Region), size=4, shape=15) +
+  geom_point(data=DGsg, aes(x=PC1, y=PC2), colour="black", size=4, shape=0) + labs(title="PCA: Colored by Region \n[SGZ samples outlined]", x=paste("PC1 (",per_PC1,"%)"), y=paste("PC2 (",per_PC2,"%)")) + theme(plot.title = element_text(hjust=0.5), legend.position="None")
+## By Age
+ggplot(data=dat) + geom_point(aes(x=PC1, y=PC2, fill=Age, color=Age), size=2) +
+  geom_point(data=DGsg, aes(x=PC1, y=PC2,colour=Age), size=4, shape=15) +
+  geom_point(data=DGsg, aes(x=PC1, y=PC2),colour="black", size=4, shape=0) + labs(title="PCA: Colored by Age \n[SGZ samples outlined]", x=paste("PC1 (",per_PC1,"%)"), y=paste("PC2 (",per_PC2,"%)")) + theme(plot.title = element_text(hjust=0.5))
+# Get top PC1 loadings
+PC1.load <-full_PCA$x[order(-abs(full_PCA$x[,1])),][,"PC1"]
+write.csv(PC1.load[1:100],"PC1.allgenes.csv")
+pander(PC1.load[1:10] , style='simple',justify='left')
+```
+
+## Unsupervised Clustering
+
+__Interactive Heatmap Instructions:__ 
+  + Hover cursor over cells to see info.
+  + Click and drag a box over the area you want to zoom in on.
+  + Click a column or row label to highlight just that column/row.
+  + Double click to return to original view.
+  
+```{r,message=F,warning=F}
+library(cluster); library(factoextra); library(magrittr)
+
+
+# [1: Distance Methods]
+unsup.clust_distance <- function(data){
+res.dist <- get_dist(data, stand=T, method="pearson")
+  library(d3heatmap) # use interactive heatmap instead
+d3heatmap(res.dist, scale = "column", k_row=num_clusts, k_col=num_clusts)
+#fviz_dist(res.dist, gradient=list(low="#00AFBB", mid="white", high="#FC4E07"))
+}
+
+# [2: Partitioning Methods]
+# [[K-means clustering]]
+unsup.clust_kmeans <-function(data.){
+  #library("NbClust")
+  #nb <- NbClust(data., distance="euclidean", min.nc=2, max.nc=10, method="kmeans")
+  library("factoextra")
+  # Conduct kmean using that number
+  set.seed(123)
+  km.res <- kmeans(data., num_clusts, nstart = 25) # Automatically extract # of clusters
+  ## Visualize
+  fviz_cluster(km.res, data = data.,
+             ellipse.type = "convex",
+             palette = "jco",
+             ggtheme = theme_minimal(), repel=F)
+}
+  
+# [[Partitioning Around Medoids (PAM) clustering]]
+unsup.clust_PAM <-function(data.){
+  library("cluster")
+  pam.res <- pam(data., num_clusts)
+  ## Visualize
+  fviz_cluster(pam.res, data = data.,
+             ellipse.type = "convex",
+             palette = "jco",
+             ggtheme = theme_minimal(), repel=T)
+}
+
+
+# [Hierarchical Methods]
+# [[Hierarchical Clustering]]
+unsup.clust_hierarchical <- function(data){
+  library("factoextra")
+  res.hc <- data %>%
+    scale() %>%                    # Scale the data
+    dist(method = "euclidean") %>% # Compute dissimilarity matrix
+    hclust(method = "ward.D2")     # Compute hierachical clustering
+  # Visualize using factoextra
+  # Cut in 4 groups and color by groups
+  fviz_dend(res.hc, k = num_clusts, # Cut in (#) groups
+            cex = 0.5, repel=F, # label size
+            palette="aaas",
+            color_labels_by_k =T, # color labels by groups
+            rect=T, # Add rectangle around groups
+            type="circular", #"rectangle", "circular", "phylogenic".
+            phylo_layout="layout.auto",# layout.auto, layout_with_drl, layout_as_tree, layout.gem, layout.mds, layout_with_lgl
+            horiz=T, main="Unsupervised Hierarchical Clustering"
+            )
+  assign("hierarchical.output",res.hc)
+}
+
+
+# [[Hierarchical Clustering on Principal Components (HCPC)]]
+unsup.clust_hcpc <- function(facto_data){
+  library(FactoMineR)
+  # Principal Component Analysis:
+  res.pca <-  PCA(facto_data, graph=F)
+    plot(res.pca)
+  # Clustering, auto nb of clusters:
+  hc <- HCPC(res.pca, nb.clust= -1)
+    hc$call$t$nb.clust # Number of suggest clusters
+  # Construct a hierarchical tree from a partition (with 10 clusters)
+    # (useful when the number of individuals is very important)
+    # hc2 <- HCPC(iris[,1:4], kk=10, nb.clust=-1)
+}
+```
+
+### All Genes
+```{r,message=F,warning=F}
+# Setup data
+    unsup.eset <-ex_mac[,pData(ex_mac)$age=="48 mo"]
+    my_data <- t(exprs(unsup.eset))
+    row.names(my_data) <-make.unique(as.character(pData(unsup.eset)$structure_name))
+    # my_data <-full_PCA.data[,first.PC:last.PC]
+    # row.names(my_data) <-make.unique(as.character(full_PCA.data$Region))
+# Estimate  number of clusters
+    # est.clusts <-fviz_nbclust(my_data, kmeans, method = "gap_stat") # [0]
+      # save(est.clusts, file="estimated.clusters_all.genes.rda")
+      load("estimated.clusters_all.genes.rda")
+      est.clusts
+      num_clusts=5 # Select number of clusters based on results
+```
+```{r,message=F,warning=F}
+# Conduct unsupervised clustering
+     unsup.clust_distance(my_data) # [1]
+    # unsup.clust_kmeans(my_data) # [2]
+    # unsup.clust_PAM(my_data) #[3]
+    # unsup.clust_hierarchical(my_data) #[4]
+    # unsup.clust_hcpc(my_data) # [5]
+```
+
+### Gene Subset: Mouse SGZ-enriched (Table S1)
+```{r,message=F,warning=F}
+# Setup data
+unsup.eset <-ex_mac[row.names(exprs(ex_mac)) %in% s1.genes, pData(ex_mac)$age=="48 mo"] 
+    my_data <- t(exprs(unsup.eset))
+    row.names(my_data) <-make.unique(as.character(pData(unsup.eset)$structure_name))
+    # my_data <-full_PCA.data[,first.PC:last.PC]
+    # row.names(my_data) <-make.unique(as.character(full_PCA.data$Region))
+# Estimate  number of clusters
+    est.clusts_S1.genes <-fviz_nbclust(my_data, kmeans, method = "gap_stat") # [0]
+    est.clusts_S1.genes
+      num_clusts=3 # Select number of clusters based on results
+```
+```{r,message=F,warning=F}
+# Conduct unsupervised clustering
+    unsup.clust_distance(my_data) # [1]
+    # unsup.clust_kmeans(my_data) # [2]
+    # unsup.clust_PAM(my_data) #[3]
+    # unsup.clust_hierarchical(my_data) #[4]
+    # unsup.clust_hcpc(my_data) # [5]
+```
+
+### Gene Subset: 'Macaque Tan Module' genes only
+```{r,message=F,warning=F}
+# Setup data
+unsup.eset <-ex_mac[row.names(exprs(ex_mac)) %in% Mac_mod.tan, pData(ex_mac)$age=="48 mo"]
+    my_data <- t(exprs(unsup.eset))
+    row.names(my_data) <-make.unique(as.character(pData(unsup.eset)$structure_name))
+    # my_data <-full_PCA.data[,first.PC:last.PC]
+    # row.names(my_data) <-make.unique(as.character(full_PCA.data$Region))
+# Estimate  number of clusters
+    est.clusts_S4.genes <-fviz_nbclust(my_data, kmeans, method = "gap_stat") # [0]
+    est.clusts_S4.genes
+      num_clusts=5 # Select number of clusters based on results
+```
+```{r,message=F,warning=F}
+# Conduct unsupervised clustering
+    unsup.clust_distance(my_data) # [1]
+    # unsup.clust_kmeans(my_data) # [2]
+    # unsup.clust_PAM(my_data) #[3]
+    # unsup.clust_hierarchical(my_data) #[4]
+    # unsup.clust_hcpc(my_data) # [5]
+```
+
+
+# __[Approach 2: Compare Expression Profiles]__
+## Differential Expression
+
+### All Genes
+```{r,message=F,warning=F}
+library(limma); library(statmod)
+SGZ.samples <-exprs(ex_mac[,pData(ex_mac)$structure_acronym==c("DGsg")& pData(ex_mac)$age=="48 mo"])
+
+region_list <- as.character(unique(pData(ex_mac)$structure_name))
+DGE_results <- NULL
+DGE_summary <- data.frame()
+for(region in region_list){
+   region.samples <-exprs( ex_mac[,pData(ex_mac)$structure_name==region & pData(ex_mac)$age=="48 mo"] )
+   limma.data <-cbind(SGZ.samples, region.samples)
+    fit <-lmFit(limma.data, design=
+                 c(rep(1,ncol(SGZ.samples)), rep(-1,ncol(region.samples))) )
+    fit <- eBayes(fit)
+    tab <- topTable(fit, number=Inf)
+   DGE_results[[paste("SGZ vs.",region)]] <- list(tab)
+   # Create summary table
+   sig <-dim(subset(tab, adj.P.Val<=0.05))[1]
+   total <- dim(tab)[1]
+   percent_DEGs <-round(dim(subset(tab, adj.P.Val<=0.05))[1] / 
+     dim(tab)[1] *100,3)
+   DGE_summary <- rbind(DGE_summary, 
+                        data.frame(Test=paste("SGZ vs.", region), Sig_DEGs=sig,
+                             Total_genes=total, Percent_DEGs=round(sig/total*100,3),
+                             Total_logFC=sum(abs(tab$logFC)),
+                             Total_t.stat=sum(abs(tab$t))) 
+                        )
+}
+
+# Print written summary
+no_DEGs <-length(subset(DGE_summary, Sig_DEGs==0)$Sig_DEGs)
+total_regions <-length(DGE_summary$Test)
+paste(no_DEGs,"/",total_regions,"adult brain regions contained no Differentially Expressed Genes compared to adult SGZ.")
+# Results table
+dge <-subset(DGE_summary,Test!="<NA>")
+pander(dge[order(c(dge$percent_DEGs, dge$Total_logFC)),], style='simple', justify='left', split.table=Inf)
+```
+
+### Mouse SGZ-enriched genes (Table S1)
+```{r,message=F,warning=F}
+#Subset just the candidate genes and re-run t-tests
+  ## Dividing.Cell genes (Miller et al. 2013, Table S1)
+  gene.sub <- ex_mac[row.names(exprs(ex_mac)) %in% s1.genes, pData(ex_mac)$age=="48 mo"]
+  
+SGZ.samples <-exprs(gene.sub[,pData(gene.sub)$structure_acronym==c("DGsg")])
+
+region_list <- as.character(unique(pData(gene.sub)$structure_name))
+DGE_results <- NULL
+DGE_summary <- data.frame()
+for(region in region_list){
+   region.samples <-exprs( gene.sub[,pData(gene.sub)$structure_name==region] )
+   limma.data <-cbind(SGZ.samples, region.samples)
+    fit <-lmFit(limma.data, design=
+                 c(rep(1,ncol(SGZ.samples)), rep(-1,ncol(region.samples))) )
+    fit <- eBayes(fit)
+    tab <- topTable(fit, number=Inf)
+   DGE_results[[paste("SGZ vs.",region)]] <- list(tab)
+   # Create summary table
+   sig <-dim(subset(tab, adj.P.Val<=0.05))[1]
+   total <- dim(tab)[1]
+   percent_DEGs <-round(dim(subset(tab, adj.P.Val<=0.05))[1] / 
+     dim(tab)[1] *100,3)
+   DGE_summary <- rbind(DGE_summary, 
+                        data.frame(Test=paste("SGZ vs.", region), Sig_DEGs=sig,
+                             Total_genes=total, Percent_DEGs=round(sig/total*100,3),
+                             Total_logFC=sum(abs(tab$logFC)),
+                             Total_t.stat=sum(abs(tab$t))) 
+                        )
+}
+
+# Print written summary
+no_DEGs <-length(subset(DGE_summary, Sig_DEGs==0)$Sig_DEGs)
+total_regions <-length(DGE_summary$Test)
+paste(no_DEGs,"/",total_regions,"adult brain regions contained no Differentially Expressed Genes compared to adult SGZ.")
+# Results table
+dge <-subset(DGE_summary,Test!="<NA>")
+pander(dge[order(c(dge$percent_DEGs, dge$Total_logFC)),], style='simple', justify='left', split.table=Inf)
+```
+
+### Macaque Tan module genes (Table S4)
+```{r,message=F,warning=F}
+#Subset just the candidate genes and re-run t-tests
+  ## Dividing.Cell genes (Miller et al. 2013, Table S4)
+  gene.sub <- ex_mac[row.names(exprs(ex_mac)) %in% Mac_mod.tan, pData(ex_mac)$age=="48 mo"]
+  
+SGZ.samples <-exprs(gene.sub[,pData(gene.sub)$structure_acronym==c("DGsg")])
+
+region_list <- as.character(unique(pData(gene.sub)$structure_name))
+DGE_results <- NULL
+DGE_summary <- data.frame()
+for(region in region_list){
+   region.samples <-exprs( gene.sub[,pData(gene.sub)$structure_name==region] )
+   limma.data <-cbind(SGZ.samples, region.samples)
+    fit <-lmFit(limma.data, design=
+                 c(rep(1,ncol(SGZ.samples)), rep(-1,ncol(region.samples))) )
+    fit <- eBayes(fit)
+    tab <- topTable(fit, number=Inf)
+   DGE_results[[paste("SGZ vs.",region)]] <- list(tab)
+   # Create summary table
+   sig <-dim(subset(tab, adj.P.Val<=0.05))[1]
+   total <- dim(tab)[1]
+   percent_DEGs <-round(dim(subset(tab, adj.P.Val<=0.05))[1] / 
+     dim(tab)[1] *100,3)
+   DGE_summary <- rbind(DGE_summary, 
+                        data.frame(Test=paste("SGZ vs.", region), Sig_DEGs=sig,
+                             Total_genes=total, Percent_DEGs=round(sig/total*100,3),
+                             Total_logFC=sum(abs(tab$logFC)),
+                             Total_t.stat=sum(abs(tab$t))) 
+                        )
+}
+
+# Print written summary
+no_DEGs <-length(subset(DGE_summary, Sig_DEGs==0)$Sig_DEGs)
+total_regions <-length(DGE_summary$Test)
+paste(no_DEGs,"/",total_regions,"adult brain regions contained no Differentially Expressed Genes compared to adult SGZ.")
+# Results table
+dge <-subset(DGE_summary,Test!="<NA>")
+pander(dge[order(c(dge$percent_DEGs, dge$Total_logFC)),], style='simple', justify='left', split.table=Inf)
+```
+
+
+
+
+# __[Approach 3: Compare Network Modules]__
+
+## WGCNA: Macaque Microarray (SGZ/GCL samples only, all ages)
+Attempt to recreate networks from Miller et al. 2013
+```{r,message=F,warning=F}
+  library(WGCNA)
+  library(flashClust)
+allowWGCNAThreads() # Enable multi-threading
+
+all.SGZ.GCL <- ex_mac[,pData(ex_mac)$structure_acronym %in% c("DGsg","DGgr")]
+datExpr <- exprs(all.SGZ.GCL)
+#net_corrs <- function(eset1, eset2){
+
+
+## Soft threshold
+powers = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14) 
+sft = pickSoftThreshold(datExpr, networkType="signed", powerVector=powers) # t(net$MEs)
+### Plot powers
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"))
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=0.9,col="red");
+# this line corresponds to using an R^2 cut-off of h
+  #abline(h=0.9,col="red")
+
+## Run
+POWER=14 # Same as Miller et al. 2013
+# Assume defaults for everything not mentioned in Miller et al. 2013
+   #net.mac.SGZ_GCL = blockwiseModules(t(datExpr), power=POWER, networkType="signed")
+ #save(net.mac.SGZ_GCL, file="WGCNA_ABA.macaque_SGZ.GCL.rda")
+
+#___________________________________________________________________________________#
+# Plot WGCNA results
+load("~/Desktop/Research/Signatures_of_Neurogensis/WGCNA_ABA.macaque_SGZ.GCL.rda")
+# Plot
+num_mods <- length(colnames(net.mac.SGZ_GCL$MEs))
+moduleColorsAutomatic = WGCNA::labels2colors(net.mac.SGZ_GCL$colors)
+mColors = moduleColorsAutomatic[net.mac.SGZ_GCL$blockGenes[[1]]]
+plotDendroAndColors(net.mac.SGZ_GCL$dendrograms[[1]], colors=mColors, dendroLabels=F, 
+                    groupLabels=c(paste("deepSplit = 2\n# modules =",num_mods)), addGuide=T,main="WGCNA Modules:\n Macaque SGZ & GCL samples")
+
+# Get mutually exclusive modules assignments for each gene
+mod_assignments <-data.frame(ModuleColors=net.mac.SGZ_GCL$colors, genes=row.names(datExpr))
+mod_assignments <- mod_assignments[order(mod_assignments$ModuleColors),]
+write.csv(mod_assignments, "module.gene.assignments_SGZ.GCL.csv")
+```
+
+### Rough '% overlap with genes in Tan module' metric
+```{r,message=F,warning=F}
+modules <-unique(mod_assignments$ModuleColors)
+module.overlap_summary <-data.frame()
+
+for(color in modules){
+  one.module <-subset(mod_assignments,ModuleColors==color)
+  percent_tan.overlap <-round(sum(Mac_mod.tan %in% as.character(one.module$genes)) / length(one.module$genes)*100,3)
+  module.overlap_summary <- rbind(module.overlap_summary,data.frame(New_Module=color, New_Module_Size=length(one.module$genes), Percent_chance.overlap=length(one.module$genes)/dim(exprs(ex_mac))[1]*100, Percent_Tan.overlap=percent_tan.overlap))
+}
+
+pander::pander(module.overlap_summary[order(-module.overlap_summary$Percent_Tan.overlap),],style='simple',justify='left', split.table=Inf)
+```
+
+
+
+## WGCNA: Macaque Microarray (all regions, all genes, all ages)
+Create new networks using all samples
+```{r,message=F,warning=F}
+ datExpr <- exprs(ex_mac)
+#net_corrs <- function(eset1, eset2){
+  library(WGCNA)
+  library(flashClust)
+
+## Soft threshold
+powers = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14) 
+sft = pickSoftThreshold(datExpr, networkType="signed", powerVector=powers) # t(net$MEs)
+### Plot powers
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"))
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=0.9,col="red");
+# this line corresponds to using an R^2 cut-off of h
+  #abline(h=0.9,col="red")
+
+## Run
+POWER=14 # Same as Miller et al. 2013
+# Assume defaults for everything not mentioned in Miller et al. 2013
+  #net.mac = blockwiseModules(t(datExpr), power=POWER, networkType="signed", deepSplit=2)
+# save(net.mac, file="WGCNA_ABA.macaque_all.samples.rda")
+
+#___________________________________________________________________________________#
+# Plot WGCNA results
+load("~/Desktop/Research/Signatures_of_Neurogensis/WGCNA_ABA.macaque_all.samples.rda")
+# Plot
+num_mods <- length(colnames(net.mac$MEs))
+moduleColorsAutomatic = WGCNA::labels2colors(net.mac$colors)
+mColors = moduleColorsAutomatic[net.mac$blockGenes[[1]]]
+plotDendroAndColors(net.mac$dendrograms[[1]], colors=mColors, dendroLabels=F, 
+                    groupLabels=c(paste("deepSplit = 2\n# modules =",num_mods)), addGuide=T,main="Cluster Dendrogram")
+
+# Get mutually exclusive modules assignments for each gene
+mod_assignments <-data.frame(ModuleColors=net.mac$colors, genes=row.names(datExpr))
+mod_assignments <-mod_assignments[order(mod_assignments$ModuleColors),]
+write.csv(mod_assignments, "module.gene.assignments_all.regions.csv")
+```
+
+### Rough '% overlap with genes in Tan module' metric
+```{r,message=F,warning=F}
+modules <-unique(mod_assignments$ModuleColors)
+module.overlap_summary <-data.frame()
+
+for(color in modules){
+  one.module <-subset(mod_assignments,ModuleColors==color)
+  percent_tan.overlap <-round(sum(Mac_mod.tan %in% as.character(one.module$genes)) / length(one.module$genes)*100,3)
+  module.overlap_summary <- rbind(module.overlap_summary,data.frame(New_Module=color, New_Module_Size=length(one.module$genes), Percent_chance.overlap=length(one.module$genes)/dim(exprs(ex_mac))[1]*100, Percent_Tan.overlap=percent_tan.overlap))
+}
+
+pander::pander(module.overlap_summary[order(-module.overlap_summary$Percent_Tan.overlap),],style='simple',justify='left', split.table=Inf)
+```
+
+* NOTES: There's almost no overlap between the new modules (derived from all macaque samples) and the tan module (derived from only macaque SGZ/GCL samples).
+
+
+### Network Preservation Analysis
+```{r,message=F,warning=F, eval=F}
+# Subset all samples from SGZ or GCL
+all.SGZ.GCL <- ex_mac[,pData(ex_mac)$structure_acronym %in% c("DGsg","DGgr")]
+# Setup up inputs
+multiExpr  = list(A1=list(data=t(exprs(ex_mac))), A2=list(data=t(exprs(all.SGZ.GCL))) )
+multiColor = list(A1 = net.mac$colors)
+# Run network preservation
+mp <- modulePreservation(multiExpr, multiColor, referenceNetworks=1, verbose=3, networkType="signed", nPermutations=30, maxGoldModuleSize=100)
+save(mp, file="network.preservation_all.samples.vs.GCL.SGZ.rda")
+```
+
+### Plot network preservation scores
+```{r,message=F,warning=F}
+load("~/Desktop/Research/Signatures_of_Neurogensis/network.preservation_all.samples.vs.GCL.SGZ.rda")
+# Summary stats
+stats <- mp$preservation$Z$ref.A1$inColumnsAlsoPresentIn.A2 # All stats output
+pander::pander(stats[order(-stats[,2]),c(1:2)][1:10,],style='simple',justify='left')
+ # Plot summary stats (Zsummary.pres)
+  library(ggplot2)
+ggplot(stats, aes(y=Zsummary.pres, x=factor(rownames(stats)),
+                                 fill=factor(rownames(stats))) ) +
+  geom_bar(stat="identity") + labs(title=paste("Network preservation scores"), y="Zsummary.pres", x="Network module") + theme(legend.position="none",axis.text.x = element_text(angle=45, hjust=1)) + scale_fill_manual(values=rownames(stats))
+```
+
+
+
+
+# __[Approach 4: Deconvolution]__
+
+## Format scRNAseq reference database
+* Redo with a more relevant sc-RNA-seq reference database
+```{r,warning=F,message=F, eval=F}
+library(EWCE)
+
+###############################################################
+## [1]: Default mouse hippocampus scRNAseq reference dataset ##
+###############################################################
+download.file("http://linnarssonlab.org/blobs/cortex/expression_mRNA_17-Aug-2014.txt",
+    destfile="expression_mRNA_17-Aug-2014.txt") 
+path = "expression_mRNA_17-Aug-2014.txt"
+celltype_data = read_celltype_data(path)
+load(file="~/Desktop/Research/Deconvolution_of_Evolution/celltype_data.rda")
+
+
+###############################################################
+## [2]: Shin et. al. 2015 scRNAseq reference dataset         ##
+###############################################################
+# First, download 'Series Matrix File(s)' from the GEO page (GSE71485) using the ARCHS4 Chrome plugin (to get the gene counts).
+library(GEOquery)
+gse <- getGEO(filename = "~/Desktop/GSE71485_GPL17021_series_matrix.txt.gz", destdir = ".", getGPL = F ) 
+Shin <- read_celltype_data(path="~/Desktop/GSE71485_GPL17021_series_matrix.txt.gz")
+celltype_data <- exprs(gse)
+```
+
+## 'Mouse SGZ-enriched' genes (Table S1)
+### Setup data
+```{r,message=F,warning=F}
+# Set up gene list
+example_genelist <- S1.genes
+# Find mouse homologues of human genes
+  data("mouse_to_human_homologs")
+  m2h = unique(mouse_to_human_homologs[,c("HGNC.symbol","MGI.symbol")])
+  mouse.hits = unique(m2h[m2h$MGI.symbol %in% example_genelist,"MGI.symbol"])
+  mouse.bg  = unique(setdiff(m2h$MGI.symbol,mouse.hits))
+  
+paste(length(mouse.hits),"/",length(example_genelist),"candidate genes found in sc-RNA-seq reference database.")
+```
+
+### Sub-cell type level
+```{r,message=F,warning=F}
+# Bootstrap significance testing:
+## 1) Without controlling for transcript length and GC content
+full_results.sub = bootstrap.enrichment.test(sct_data=celltype_data,
+                                         mouse.hits=mouse.hits,mouse.bg=mouse.bg,
+                                         reps=10000, sub=T)
+full_results.sub$results[order(full_results.sub$results$p),3:5][1:6,]
+# Bootstrap plot
+ewce.plot(full_results.sub$results,mtc_method="BH")
+
+
+## 2) Controlling for transcript length and GC content (NOT WORKING)
+### Need to convert gene list to human gene symbols
+human.hits = unique(m2h[m2h$HGNC.symbol %in% example_genelist,"HGNC.symbol"])
+human.bg = unique(setdiff(m2h$HGNC.symbol,human.hits))
+# Bootstrap significance testing controlling for transcript length and GC content
+#cont_results.sub = bootstrap.enrichment.test(sct_data=celltype_data,
+ #                               human.hits=human.hits, human.bg=human.bg,
+ #                                reps=10000, sub=T, geneSizeControl=T)
+#ewce.plot(cont_results.sub$results,mtc_method="BH")
+```
+
++ NOTES: EWCE deconvolution pretty nicely reconstructs cell types from 'mouse SGZ-enriched' genes.
+
+### Cell type level
+```{r,message=F,warning=F}
+# 1) Bootstrap significance testing without controlling for transcript length and GC content
+full_results = bootstrap.enrichment.test(sct_data=celltype_data,
+                                         mouse.hits=mouse.hits,mouse.bg=mouse.bg,
+                                         reps=10000, sub=F)
+ewce.plot(full_results$results ,mtc_method="BH")
+
+# 1) Controlling for transcript length and GC content (NOT WORKING)
+#cont_results = bootstrap.enrichment.test(sct_data=celltype_data,human.hits=human.hits,human.bg=human.bg,reps=reps,sub=F,geneSizeControl=T)
+#ewce.plot(cont_results$results,mtc_method="BH")
+```
+
+## 'Macaque tan module' genes (Table S4)
+### Setup data
+```{r,message=F,warning=F}
+# Set up gene list
+example_genelist <- Mac_mod.tan
+
+library("EWCE")
+load(file="~/Desktop/Research/Deconvolution_of_Evolution/celltype_data.rda")
+# Find mouse homologues of human genes
+  data("mouse_to_human_homologs")
+  m2h = unique(mouse_to_human_homologs[,c("HGNC.symbol","MGI.symbol")])
+  mouse.hits = unique(m2h[m2h$HGNC.symbol %in% example_genelist,"MGI.symbol"])
+  mouse.bg  = unique(setdiff(m2h$MGI.symbol,mouse.hits))
+  
+paste(length(mouse.hits),"/",length(example_genelist),"candidate genes found in sc-RNA-seq reference database.")
+```
+
+### Sub-cell type level
+```{r,message=F,warning=F}
+# Bootstrap significance testing:
+## 1) Without controlling for transcript length and GC content
+full_results.sub = bootstrap.enrichment.test(sct_data=celltype_data,
+                                         mouse.hits=mouse.hits,mouse.bg=mouse.bg,
+                                         reps=10000, sub=T)
+full_results.sub$results[order(full_results.sub$results$p),3:5][1:6,]
+# Bootstrap plot
+ewce.plot(full_results.sub$results,mtc_method="BH")
+
+
+## 2) Controlling for transcript length and GC content (NOT WORKING)
+### Need to convert gene list to human gene symbols
+human.hits = unique(m2h[m2h$HGNC.symbol %in% example_genelist,"HGNC.symbol"])
+human.bg = unique(setdiff(m2h$HGNC.symbol,human.hits))
+# Bootstrap significance testing controlling for transcript length and GC content
+#cont_results.sub = bootstrap.enrichment.test(sct_data=celltype_data,
+ #                               human.hits=human.hits, human.bg=human.bg,
+ #                                reps=10000, sub=T, geneSizeControl=T)
+#ewce.plot(cont_results.sub$results,mtc_method="BH")
+```
+
++ NOTES: EWCE deconvolution pretty nicely reconstructs cell types from 'mouse SGZ-enriched' genes.
+
+### Cell type level
+```{r,message=F,warning=F}
+# 1) Bootstrap significance testing without controlling for transcript length and GC content
+full_results = bootstrap.enrichment.test(sct_data=celltype_data,
+                                         mouse.hits=mouse.hits,mouse.bg=mouse.bg,
+                                         reps=10000, sub=F)
+ewce.plot(full_results$results ,mtc_method="BH")
+
+# 1) Controlling for transcript length and GC content (NOT WORKING)
+#cont_results = bootstrap.enrichment.test(sct_data=celltype_data,human.hits=human.hits,human.bg=human.bg,reps=reps,sub=F,geneSizeControl=T)
+#ewce.plot(cont_results$results,mtc_method="BH")
+```
+
+## Iteratively run EWCE on each region's DGE signature
+
+### Run DGE: Each region vs. all other regions
+```{r,warning=F,message=F}
+samples <-ex_mac[,pData(ex_mac)$age=="48 mo"]
+
+region_list <- as.character(unique(pData(samples)$structure_acronym))
+DGE_results <- NULL
+DGE_summary <- data.frame()
+for(region in region_list){
+    other.samples <-exprs( samples[,pData(samples)$structure_acronym!=region] )
+   region.samples <-exprs( samples[,pData(samples)$structure_acronym==region] )
+  # Run DGE
+   limma.data <-cbind(region.samples, other.samples)
+    fit <-lmFit(limma.data, design=
+                 c(rep(1,ncol(region.samples)), rep(-1,ncol(other.samples))) )
+    fit <- eBayes(fit)
+    tab <- topTable(fit, number=Inf)
+    tab <- tab[order(-abs(tab$logFC)),]
+  
+   DGE_results[[paste(region,"vs. all other regions")]] <- list(tab)
+   # Create summary table
+   sig <-dim(subset(tab, adj.P.Val<=0.05))[1]
+   total <- dim(tab)[1]
+   percent_DEGs <-round(sig / total *100,3)
+   DGE_summary <- rbind(DGE_summary,data.frame(Test=paste(region,"vs. all other regions"),Sig_DEGs=sig, Total_genes=total, Percent_DEGs=round(sig/total*100,3),
+                             Total_logFC=sum(abs(subset(tab, adj.P.Val<=0.05)$logFC)) ) 
+                        )
+}
+
+# Print written summary
+per_DEG <-length(subset(DGE_summary, percent_DEGs==100)$Sig_DEGs)
+total_regions <-length(DGE_summary$Test)
+paste(per_DEG,"/",total_regions,"adult brain regions have ALL genes differentially expressed.")
+# Results table
+pander::pander(subset(DGE_summary[order(c(DGE_summary$Percent_DEGs, -DGE_summary$Total_logFC)),], Test!="<NA>"),style='simple', justify='left', split.table=Inf)
+```
+
+### Run EWCE for each region
+```{r,warning=F,message=F, echo=F}
+# The first step is to load the data, obtain the MGI ids, sort the rows by t-statistic and then select the most up/down-regulated genes. 
+  ## Example data
+  #data(tt_alzh)
+tt_results <- NULL
+for(region in region_list){
+# select Region
+  #region <- "DGsg" 
+  tt_data <-DGE_results[[paste(region,"vs. all other regions")]][[1]]
+  tt_data$HGNC.symbol <-row.names(tt_data)
+# Run analysis
+tt_results[region] <-list(ewce_expression_data(sct_data=celltype_data, tt=tt_data))
+# Plot
+tt_results[[region]]$plot <-ewce.plot(tt_results[[region]]$joint_results)
+tt_results[[region]]$plot
+}
+
+# Get specific plots
+tt_results[["DGsg"]]$plot
+tt_results[["DGgr"]]$plot
+```
+
+### Subset regions enriched in certain cell types
+```{r,warning=F,message=F}
+cell.type1 <-"astrocytes-ependymal"
+cell.type2 <-"oligodendrocytes"
+cell.type3 <-"interneurons"
+
+enrichment.summary <-data.frame()
+for(region in region_list){
+  # 1st cell type
+  if(subset(tt_results[[region]]$joint_results, CellType==cell.type1 &
+            Direction=="Up")$p<=0.05){enriched1="Yes"} else{enriched1="No"}
+  # 2nd cell type
+    if(subset(tt_results[[region]]$joint_results, CellType==cell.type2 &
+            Direction=="Up")$p<=0.05){enriched2="Yes"} else{enriched2="No"}
+  # 3rd cell type
+    if(subset(tt_results[[region]]$joint_results, CellType==cell.type3 &
+            Direction=="Up")$p<=0.05){enriched3="Yes"} else{enriched3="No"}
+  # Summarise
+  enrichment.summary <-rbind(enrichment.summary, 
+            data.frame(Region=region, Cell.Type=cell.type1, Enriched=enriched1), 
+            data.frame(Region=region, Cell.Type=cell.type2, Enriched=enriched2),
+            data.frame(Region=region, Cell.Type=cell.type3, Enriched=enriched3))
+}
+
+# Get only significantly enriched regions
+enrich.summ <-subset(enrichment.summary, Enriched=="Yes")
+pander(enrich.summ[order(enrich.summ$Region),], style='simple',justify='left')
+```
+
+# Jeremy WGCNA scripts
+### WGCNA
+```{r}
+# Jeremy's Dropbox data
+load("~/Desktop/Research/Signatures_of_Neurogensis/neurogenesisPaperData_ComBat_5_29_12.RData")
+# ABA data
+#load("~/Desktop/Research/Signatures_of_Neurogensis/ABA.macaque_preprocessed.v4.RData")
+
+library(WGCNA); library(flashClust)
+############################################################################# 
+## Perform WGCNA on the macaque DG-gcl/DG-sgz data using ALL macaque genes ############################################################################### Choose the correct power for the network, and then find the TOM and clustering tree 
+datExprMq2 =   2^t(datDG)#2^t(datExpr)#
+pickSoftThreshold(datExprMq2,networkType="signed",powerVector= c(10,12,14,16,18))# Power SFT.R.sq slope 
+powerMq2    = 14; AdjMatMq2 = adjacency(datExprMq2,power=powerMq2,type="signed"); diag(AdjMatMq2) = 0 
+dissTOMq2   = 1-TOMsimilarity(AdjMatMq2, TOMType="signed");  collectGarbage();   geneTreeMq2 = flashClust(as.dist(dissTOMq2),method="average"); collectGarbage();   
+## Plot the gene dendrograms and try out various parameters for tree cutting
+mColorh=NULL; mName = NULL 
+for (ds in c(0,1,2)) for (num in c(50,100,500))  {  
+  tree = cutreeHybrid(dendro = geneTreeMq2, pamStage=FALSE, minClusterSize = num, deepSplit = ds, distM = dissTOMq2, cutHeight=0.99)  
+  mColorh = cbind(mColorh,labels2colors(tree$labels));  
+  mName   = cbind(mName, paste("ds =",ds,"- num =",num)) } 
+pdf("deepSplit_tree_MacaqueAllGenes_cuts_final.pdf", height=10,width=20)
+#x11()
+plotDendroAndColors(geneTreeMq2, mColorh, mName, dendroLabels=FALSE, hang=0.03, addGuide=TRUE, guideHang=0.05, main="Gene dendrogram and module colors")
+dev.off() 
+
+# save(list=c("AdjMatMq2", "geneTreeMq2", "dissTOMq2", "geneTreeMq2"), file="Jeremy.data_SGZ.GCL_JeremyWGCNA.rda")
+```
+
+### Rough '% overlap with genes in Tan module' metric
+```{r,message=F,warning=F}
+# ABA data analyzed with Jeremy's long WGCNA method
+load("~/Desktop/Research/Signatures_of_Neurogensis/WGCNA_tests/ABA_SGZ.GCL_JeremyWGCNA.rda")
+# Jeremy's data analyzed with Jeremy's long WGCNA method
+
+# Get mutually exclusive modules assignments for each gene
+modules <- unique(mColorh[,1])
+mod_assignments <-data.frame(ModuleColors=mColorh[,1], genes=row.names(datExpr))
+mod_assignments <-mod_assignments[order(mod_assignments$ModuleColors),]
+write.csv(mod_assignments, "module.gene.assignments_SGZ.GCL_JeremyWGCNA.csv")
+
+
+
+modules <-unique(mod_assignments$ModuleColors)
+module.overlap_summary <-data.frame()
+
+for(color in modules){
+  one.module <-subset(mod_assignments,ModuleColors==color)
+  percent_tan.overlap <-round(sum(Mac_mod.tan %in% as.character(one.module$genes)) / length(one.module$genes)*100,3)
+  module.overlap_summary <- rbind(module.overlap_summary,data.frame(New_Module=color, New_Module_Size=length(one.module$genes), Percent_chance.overlap=length(one.module$genes)/dim(exprs(ex_mac))[1]*100, Percent_Tan.overlap=percent_tan.overlap))
+}
+
+pander::pander(module.overlap_summary[order(-module.overlap_summary$Percent_Tan.overlap),],style='simple',justify='left', split.table=Inf)
+```
+
+```{r}
+read_excel("~/Desktop/")
+```
+
+
